@@ -18,6 +18,9 @@ jobs:
     name: Build installable Dev APK
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout
@@ -29,11 +32,30 @@ jobs:
           java-version: "17"
           distribution: temurin
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate Android SDK tools
+        shell: bash
+        run: |
+          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [[ ! -d "$SDK_PATH" ]]; then
+            echo "Android SDK directory was not found: $SDK_PATH" >&2
+            exit 1
+          fi
+          SDKMANAGER="$(find "$SDK_PATH/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "sdkmanager was not found under $SDK_PATH/cmdline-tools" >&2
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_PATH" >> "$GITHUB_ENV"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "Using Android SDK: $SDK_PATH"
+          echo "Using sdkmanager: $SDKMANAGER"
 
       - name: Install required Android SDK packages
-        run: sdkmanager --install "platforms;android-37" "cmake;3.22.1"
+        shell: bash
+        run: |
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --install "platforms;android-37" "cmake;3.22.1"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -45,13 +67,8 @@ jobs:
           LISTEN_TOGETHER_SERVER: ${{ secrets.LISTEN_TOGETHER_SERVER }}
         shell: bash
         run: |
-          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-          if [[ -z "$SDK_PATH" || ! -d "$SDK_PATH" ]]; then
-            echo "Android SDK directory was not found." >&2
-            exit 1
-          fi
           cat > local.properties <<EOF
-          sdk.dir=$SDK_PATH
+          sdk.dir=$ANDROID_HOME
           LASTFM_API_KEY=$LASTFM_API_KEY
           LASTFM_SECRET=$LASTFM_SECRET
           LISTEN_TOGETHER_SERVER=$LISTEN_TOGETHER_SERVER
