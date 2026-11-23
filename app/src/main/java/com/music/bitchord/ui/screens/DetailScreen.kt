@@ -166,7 +166,10 @@ import com.music.bitchord.ui.components.LIBRARY_GRID_SPACING
 import com.music.bitchord.ui.components.MessageState
 import com.music.bitchord.ui.components.PAGE_GUTTER
 import com.music.bitchord.ui.components.NUMBERED_ROW_DIVIDER_INSET
+import com.music.bitchord.ui.SongSelection
 import com.music.bitchord.ui.components.QuickScrollBar
+import com.music.bitchord.ui.components.SongSelectionActions
+import com.music.bitchord.ui.components.SongSelectionBar
 import com.music.bitchord.ui.components.RowMoreButton
 import com.music.bitchord.ui.components.ROW_DIVIDER_INSET
 import com.music.bitchord.ui.components.SHELF_CARD_WIDTH
@@ -371,6 +374,9 @@ fun DetailScreen(
      * [ArtworkPalette] so it reads as this page rather than a sheet over it.
      */
     reorder: (@Composable (ArtworkPalette) -> Unit)? = null,
+    /** Songs selected on this page for a batch action. */
+    selection: SongSelection? = null,
+    selectionActions: SongSelectionActions? = null,
 ) {
     val rawSongs = (page.songs as? UiState.Success)?.data.orEmpty()
     // A folder keeps its own sort — the one its top bar menu sets — rather
@@ -588,7 +594,8 @@ fun DetailScreen(
                     enabled = page.type == BrowseType.PLAYLIST && folder == null,
                     leadingItemCount = if (searching) 2 else 1,
                     trackPadding = PaddingValues(
-                        top = topBarContentPadding(),
+                        top = topBarContentPadding() +
+                            if (selection != null && folder == null) 56.dp else 0.dp,
                         bottom = contentPadding.calculateBottomPadding(),
                     ),
                 ) {
@@ -799,11 +806,19 @@ fun DetailScreen(
                                 song.copy(thumbnailUrl = song.thumbnailUrl ?: page.thumbnailUrl)
                             },
                             onClick = {
-                                onSongClick(queue, position)
+                                if (selection != null && selectionActions != null) {
+                                    selectionActions.onToggle(song)
+                                } else {
+                                    onSongClick(queue, position)
+                                }
                             },
                             onLongPress = { onSongLongPress(song) },
                             onSwipeToQueue = { onSongSwipe(song) },
-                            rowBackground = Color.Transparent,
+                            rowBackground = if (selection?.contains(song) == true) {
+                                palette.accent.copy(alpha = 0.22f)
+                            } else {
+                                Color.Transparent
+                            },
                             // The track's place on the release, not its place in
                             // what the filter — or a sort — left standing.
                             trackNumber = originalTrackNumbers[song.videoId].takeIf { numbered },
@@ -892,6 +907,17 @@ fun DetailScreen(
             }
             if (isArtist) aboutItem()
                     }
+                }
+
+                if (selection != null && selectionActions != null && folder == null) {
+                    SongSelectionBar(
+                        selection = selection,
+                        songs = songs,
+                        actions = selectionActions,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = topBarContentPadding(), start = PAGE_GUTTER, end = PAGE_GUTTER),
+                    )
                 }
 
                 if (folder != null && folderState != null && folderState.selecting) {

@@ -120,7 +120,12 @@ object OfflinePlaylists {
         return playlist
     }
 
-    class AddResult(val added: Int, val alreadyThere: Int)
+    class AddResult(
+        val added: Int,
+        val alreadyThere: Int,
+        /** Number of distinct tracks inserted across the selected playlists. */
+        val songsAdded: Int = 0,
+    )
 
     /**
      * Adds [songs] to every playlist in [ids], each at most once per playlist.
@@ -130,6 +135,7 @@ object OfflinePlaylists {
         val incoming = songs.filter { it.localUri != null }.distinctBy { it.localUri }
         var added = 0
         var alreadyThere = 0
+        var songsAdded = 0
         mutate { list ->
             list.map { playlist ->
                 if (playlist.id !in ids) return@map playlist
@@ -140,18 +146,29 @@ object OfflinePlaylists {
                     return@map playlist
                 }
                 added++
+                songsAdded += fresh.size
                 // Liked keeps its newest first, as a like from the menu does.
                 playlist.copy(songs = if (playlist.isLiked) fresh + playlist.songs else playlist.songs + fresh)
             }
         }
-        return AddResult(added, alreadyThere)
+        return AddResult(added, alreadyThere, songsAdded)
     }
 
-    fun remove(browseId: String, song: Song) {
+    fun remove(browseId: String, song: Song) = remove(browseId, listOf(song))
+
+    /** Removes a batch of local tracks with one store update. */
+    fun remove(browseId: String, songs: List<Song>) {
         val id = browseId.removePrefix(PREFIX)
-        val key = song.localUri ?: return
+        val keys = songs.mapNotNullTo(HashSet()) { it.localUri }
+        if (keys.isEmpty()) return
         mutate { list ->
-            list.map { if (it.id == id) it.copy(songs = it.songs.filterNot { s -> s.localUri == key }) else it }
+            list.map { playlist ->
+                if (playlist.id == id) {
+                    playlist.copy(songs = playlist.songs.filterNot { song -> song.localUri?.let(keys::contains) == true })
+                } else {
+                    playlist
+                }
+            }
         }
     }
 

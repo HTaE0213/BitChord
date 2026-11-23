@@ -163,6 +163,7 @@ import com.music.bitchord.data.scrobbling.LastFM
 import com.music.bitchord.data.settings.AppSettings
 import com.music.bitchord.data.settings.BitPerfectMode
 import com.music.bitchord.ui.AddonBlockedAlert
+import com.music.bitchord.ui.components.SongSelectionActions
 import com.music.bitchord.data.settings.LibrarySort
 import com.music.bitchord.data.settings.ThemeMode
 import com.music.bitchord.ui.components.AccountProfileSelector
@@ -779,6 +780,9 @@ private fun BitChordApp(
     // Separate from [songActions] so the menu can close behind it — the picker
     // is the next step, not a second sheet stacked on the first.
     var playlistTarget by remember { mutableStateOf<Song?>(null) }
+    /** Tracks selected on a detail page, waiting for the account playlist picker. */
+    var selectedPlaylistSongs by remember { mutableStateOf<List<Song>?>(null) }
+    val songSelection by viewModel.selection.collectAsStateWithLifecycle()
     // The album whose complete track list is being added to selected playlists.
     var albumPlaylistTarget by remember { mutableStateOf<BrowseTarget?>(null) }
     var queuePlaylistSongs by remember { mutableStateOf<List<Song>?>(null) }
@@ -789,6 +793,8 @@ private fun BitChordApp(
     // The same two, over the device's own playlists — for a track that is a
     // file on it, and for "New playlist" on Local Music's Playlists tab.
     var offlinePlaylistTarget by remember { mutableStateOf<Song?>(null) }
+    /** Several local files selected for a device-playlist operation. */
+    var offlinePlaylistSongs by remember { mutableStateOf<List<Song>?>(null) }
     var creatingOfflinePlaylist by remember { mutableStateOf(false) }
     var showSpotifyImportDialog by remember { mutableStateOf(false) }
     // Which album or playlist the collection menu is open on, or null when it
@@ -2975,6 +2981,7 @@ private fun BitChordApp(
         // and dialog further down registers its own handler as it opens, and
         // so outranks all of these while it is up.
         BackHandler(enabled = canGoBack, onBack = goBack)
+        BackHandler(enabled = songSelection != null) { viewModel.clearSelection() }
         // Replay's stories and its share sheet are drawn over everything, and
         // unwind in the order they were opened. Only while there is a summary
         // to draw them from — otherwise back would spend a step closing
@@ -3338,7 +3345,7 @@ private fun BitChordApp(
                                     sort = folderSortOf(page.browseId),
                                     viewType = folderViewTypeOf(page.browseId),
                                     collections = downloadCollections,
-                                    selectable = isDownloads || isCache,
+                                    selectable = isDownloads || isCache || isDevice,
                                     onOpenGroup = viewModel::openLocalGroup,
                                     onGroupLongPress = { group ->
                                         openBrowseMenu(
@@ -3371,6 +3378,9 @@ private fun BitChordApp(
                                     },
                                     onDownload = if (isCache) downloadFromCache else null,
                                     onRemoveFromCache = if (isCache) removeFromCache else null,
+                                    onPlayNext = if (isDevice) { selected -> playSongsNext(selected) } else null,
+                                    onAddToQueue = if (isDevice) { selected -> addSongsToQueue(selected) } else null,
+                                    onAddToPlaylist = if (isDevice) { selected -> offlinePlaylistSongs = selected } else null,
                                     tabs = if (isDevice) LocalFolderTab.DEVICE else LocalFolderTab.BASIC,
                                     playlists = if (isDevice) offlinePlaylistGroups else emptyList(),
                                     onCreatePlaylist = if (isDevice) ({ creatingOfflinePlaylist = true }) else null,
@@ -3442,6 +3452,16 @@ private fun BitChordApp(
                             }
                             // This page's songs being rearranged, drawn in place of its list.
                             val reordering = reorderTarget?.takeIf { it.browseId == page.browseId }
+                            val pageSelection = songSelection?.takeIf { it.browseId == page.browseId }
+                            val pageSelectedSongs = pageSelection
+                                ?.of((page.songs as? UiState.Success)?.data.orEmpty())
+                                .orEmpty()
+                            val pageSelectionIsLocal = pageSelectedSongs.isNotEmpty() &&
+                                pageSelectedSongs.all { selected ->
+                                    selected.localUri != null &&
+                                        (selected.videoId.startsWith("content://") || selected.videoId.startsWith("file://"))
+                                }
+                            val editableSelectionPlaylist = viewModel.editablePlaylist(page.browseId)
                             DetailScreen(
                                 page = page,
                                 currentSong = player.song,
@@ -3526,6 +3546,63 @@ private fun BitChordApp(
                                 songSort = songSort,
                                 folder = folder,
                                 contentPadding = listPadding,
+                                selection = pageSelection,
+                                selectionActions = pageSelection?.let {
+                                    SongSelectionActions(
+                                        onToggle = viewModel::toggleSelected,
+                                        onSelectAll = { selected -> viewModel.selectAll(page.browseId, selected) },
+                                        onPlayNext = { selected ->
+                                            playSongsNext(selected)
+                                            viewModel.clearSelection()
+                                        },
+                                        onAddToQueue = { selected ->
+                                            addSongsToQueue(selected)
+                                            viewModel.clearSelection()
+                                        },
+                                        onAddToPlaylist = when {
+                                            pageSelectionIsLocal -> { selected -> offlinePlaylistSongs = selected }
+                                            signedIn -> {
+                                                { selected ->
+                                                    viewModel.loadPlaylists()
+                                                    selectedPlaylistSongs = selected
+                                                }
+                                            }
+                                            else -> null
+                                        },
+                                        onRemove = when {
+                                            editableSelectionPlaylist != null -> {
+                                                { selected ->
+                                                    viewModel.removeFromPlaylist(page.browseId, selected) { removed ->
+                                                        showQueueNotice(
+                                                            context.getString(
+                                                                if (removed) R.string.removed_from_playlist_notice else R.string.failed,
+                                                            ),
+                                                        )
+                                                    }
+                                                    viewModel.clearSelection()
+                                                }
+                                            }
+                                            OfflinePlaylists.isOfflinePlaylist(page.browseId) -> {
+                                                { selected ->
+                                                    OfflinePlaylists.remove(page.browseId, selected)
+                                                    viewModel.reloadLocalDetail(page.browseId)
+                                                    showQueueNotice(context.getString(R.string.removed_from_playlist_notice))
+                                                    viewModel.clearSelection()
+                                                }
+                                            }
+                                            localPlaylists.any { it.browseId == page.browseId } -> {
+                                                { selected ->
+                                                    com.music.bitchord.data.spotify.LocalPlaylistStore.removeSongs(page.browseId, selected)
+                                                    viewModel.reloadLocalDetail(page.browseId)
+                                                    showQueueNotice(context.getString(R.string.removed_from_playlist_notice))
+                                                    viewModel.clearSelection()
+                                                }
+                                            }
+                                            else -> null
+                                        },
+                                        onDone = viewModel::clearSelection,
+                                    )
+                                },
                                 reorder = if (reordering != null) {
                                     { palette ->
                                         ReorderPlaylistPage(
@@ -4732,6 +4809,20 @@ private fun BitChordApp(
                         playlistTarget = song
                     }
                 },
+                onSelect = detail?.takeIf { page ->
+                    !fromPlayer &&
+                        songSelection == null &&
+                        !page.browseId.isDeviceFolder() &&
+                        (page.type == BrowseType.ALBUM || page.type == BrowseType.PLAYLIST) &&
+                        (page.songs as? UiState.Success)?.data?.any { row ->
+                            row.videoId == song.videoId && row.setVideoId == song.setVideoId
+                        } == true
+                }?.let { page ->
+                    {
+                        songActions = null
+                        viewModel.startSelection(page.browseId, song)
+                    }
+                },
                 onRemoveFromPlaylist = editable?.let {
                     {
                         songActions = null
@@ -5240,6 +5331,43 @@ private fun BitChordApp(
             )
         }
 
+        selectedPlaylistSongs?.let { targets ->
+            PlaylistPickerSheet(
+                playlists = playlists,
+                loading = playlistsLoading,
+                songs = targets,
+                onDismiss = { selectedPlaylistSongs = null },
+                onAdd = { picked ->
+                    viewModel.addSongsToPlaylists(picked, targets) { added, alreadyThere, failed ->
+                        showQueueNotice(
+                            when {
+                                added > 0 -> context.getString(
+                                    R.string.queue_playlist_added,
+                                    added,
+                                    targets.size * picked.size,
+                                )
+                                alreadyThere > 0 && failed == 0 -> context.getString(R.string.song_already_in_playlist)
+                                else -> context.getString(R.string.failed)
+                            },
+                        )
+                    }
+                    viewModel.clearSelection()
+                },
+                onCreate = { title, privacy ->
+                    viewModel.createPlaylist(title, privacy, targets) { added, alreadyThere, failed ->
+                        showQueueNotice(
+                            when {
+                                added > 0 -> context.getString(R.string.queue_playlist_added, added, targets.size)
+                                alreadyThere > 0 && failed == 0 -> context.getString(R.string.song_already_in_playlist)
+                                else -> context.getString(R.string.failed)
+                            },
+                        )
+                    }
+                    viewModel.clearSelection()
+                },
+            )
+        }
+
         albumPlaylistTarget?.let { target ->
             PlaylistPickerSheet(
                 playlists = playlists,
@@ -5273,10 +5401,12 @@ private fun BitChordApp(
         // The sheet above over the offline player's own playlists, for a track
         // that is a file on this device. Nothing here waits on a network, so
         // there is no loading state and the outcome is known on the tap.
-        if (offlinePlaylistTarget != null || creatingOfflinePlaylist) {
+        if (offlinePlaylistTarget != null || offlinePlaylistSongs != null || creatingOfflinePlaylist) {
             val target = offlinePlaylistTarget
+            val targets = offlinePlaylistSongs ?: listOfNotNull(target)
             val dismiss = {
                 offlinePlaylistTarget = null
+                offlinePlaylistSongs = null
                 creatingOfflinePlaylist = false
             }
             val choices = remember(offlinePlaylists) {
@@ -5297,28 +5427,41 @@ private fun BitChordApp(
             PlaylistPickerSheet(
                 playlists = choices,
                 loading = false,
-                song = target,
-                startCreating = target == null,
+                song = target.takeIf { offlinePlaylistSongs == null },
+                songs = offlinePlaylistSongs.orEmpty(),
+                startCreating = target == null && offlinePlaylistSongs == null,
                 offline = true,
                 onDismiss = dismiss,
                 onAdd = { picked ->
-                    target?.let { song ->
-                        val result = OfflinePlaylists.add(picked.mapTo(HashSet()) { it.playlistId }, listOf(song))
-                        showQueueNotice(
-                            when {
-                                result.added > 1 -> context.resources.getQuantityString(
-                                    R.plurals.added_to_playlists_notice, result.added, result.added,
+                    val result = OfflinePlaylists.add(picked.mapTo(HashSet()) { it.playlistId }, targets)
+                    showQueueNotice(
+                        when {
+                            result.added > 1 -> context.resources.getQuantityString(
+                                R.plurals.added_to_playlists_notice, result.added, result.added,
+                            )
+                            result.added == 1 -> if (targets.size == 1) {
+                                context.getString(R.string.song_added_to_playlist)
+                            } else {
+                                context.resources.getQuantityString(
+                                    R.plurals.songs_added_to_playlist_notice,
+                                    result.songsAdded,
+                                    result.songsAdded,
                                 )
-                                result.added == 1 -> context.getString(R.string.song_added_to_playlist)
-                                result.alreadyThere > 0 -> context.getString(R.string.song_already_in_playlist)
-                                else -> context.getString(R.string.failed)
-                            },
-                        )
-                    }
+                            }
+                            result.alreadyThere > 0 -> context.getString(R.string.song_already_in_playlist)
+                            else -> context.getString(R.string.failed)
+                        },
+                    )
+                    viewModel.clearSelection()
                 },
                 onCreate = { title, _ ->
-                    OfflinePlaylists.create(title, listOfNotNull(target))
-                    if (target != null) showQueueNotice(context.getString(R.string.song_added_to_playlist))
+                    val created = OfflinePlaylists.create(title, targets)
+                    if (targets.isNotEmpty()) {
+                        showQueueNotice(
+                            context.getString(R.string.queue_playlist_added, created.songs.size, targets.size),
+                        )
+                    }
+                    viewModel.clearSelection()
                 },
             )
         }

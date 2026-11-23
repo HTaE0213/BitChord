@@ -3,7 +3,9 @@ package com.music.bitchord.ui.screens
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -91,6 +93,7 @@ import com.music.bitchord.ui.components.longPressMenuClickable
 import com.music.bitchord.ui.components.rememberRemoteArtworkUrl
 import com.music.bitchord.ui.components.thumbnailBorder
 import com.music.bitchord.ui.icons.BitChordIcons
+import com.music.bitchord.ui.icons.SfIcons
 import com.music.bitchord.ui.theme.ArtworkPalette
 
 /**
@@ -120,8 +123,8 @@ class LocalFolder(
     /** Downloads only: the releases those files were asked for as — see [LocalGroups.albumsOf]. */
     val collections: List<DownloadedCollection> = emptyList(),
     /**
-     * Downloads only: holding a song or an album selects it, for [onDelete] and
-     * [onUpload] to act on, and the row's ⋮ carries the actions sheet instead.
+     * Local Music, Downloads and Cached songs: holding a song enters selection
+     * mode. Downloads and Cache also use group holds to select every track in it.
      */
     val selectable: Boolean = false,
     val onOpenGroup: (LocalGroup) -> Unit,
@@ -138,6 +141,12 @@ class LocalFolder(
     val onDownload: ((List<Song>) -> Unit)? = null,
     /** Cached songs only: takes the selection out of the song cache. */
     val onRemoveFromCache: ((List<Song>) -> Unit)? = null,
+    /** Local Music only: inserts the selected files at the front of the queue. */
+    val onPlayNext: ((List<Song>) -> Unit)? = null,
+    /** Local Music only: appends the selected files to the queue. */
+    val onAddToQueue: ((List<Song>) -> Unit)? = null,
+    /** Local Music only: adds selected files to one or more device playlists. */
+    val onAddToPlaylist: ((List<Song>) -> Unit)? = null,
     /** Which ways of looking at the tracks this folder offers, in order. */
     val tabs: List<LocalFolderTab> = LocalFolderTab.BASIC,
     /**
@@ -324,7 +333,13 @@ internal fun LazyListScope.localFolderItems(
         if (state.selecting && group.type != BrowseType.OTHER) state.toggle(group) else folder.onOpenGroup(group)
     }
     val groupHold: (LocalGroup) -> Unit = { group ->
-        if (folder.selectable && group.type != BrowseType.OTHER) state.select(group) else folder.onGroupLongPress(group)
+        // Local Music keeps its album/artist long-press menu; a song long-press
+        // starts selection there. Downloads and Cache use group holds as Select.
+        if (folder.selectable && tabs != LocalFolderTab.DEVICE && group.type != BrowseType.OTHER) {
+            state.select(group)
+        } else {
+            folder.onGroupLongPress(group)
+        }
     }
 
     val isCurrentRow = playingRowMatcher(songs, currentSong)
@@ -802,9 +817,9 @@ private fun TrailingGlyph(selected: Boolean, palette: ArtworkPalette) {
 }
 
 /**
- * The Downloads selection's actions, floated under the top bar while anything
- * is selected — over the list rather than in it, so it stays in reach however
- * far down the selection was made.
+ * The local-library selection's actions, floated under the top bar while
+ * anything is selected — over the list rather than in it, so it stays in reach
+ * however far down the selection was made.
  */
 @Composable
 internal fun LocalFolderSelectionBar(
@@ -840,45 +855,93 @@ internal fun LocalFolderSelectionBar(
             text = "$count ${stringResource(R.string.selected)}",
             style = MaterialTheme.typography.titleSmall,
             color = if (dark) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.padding(horizontal = 4.dp),
+            maxLines = 1,
         )
-        folder.onUpload?.let { upload ->
-            SelectionAction(
-                icon = Icons.Rounded.FileUpload,
-                label = stringResource(R.string.upload_to_webdav),
-                color = MaterialTheme.colorScheme.primary,
-                enabled = count > 0,
-                onClick = { upload(chosen()) },
-            )
-        }
-        folder.onDownload?.let { download ->
-            SelectionAction(
-                icon = Icons.Rounded.Download,
-                label = stringResource(R.string.download),
-                color = MaterialTheme.colorScheme.primary,
-                enabled = count > 0,
-                onClick = { download(chosen()) },
-            )
-        }
-        folder.onRemoveFromCache?.let { remove ->
-            SelectionAction(
-                icon = Icons.Rounded.Delete,
-                label = stringResource(R.string.cached_song_remove),
-                color = DESTRUCTIVE,
-                enabled = count > 0,
-                onClick = { remove(chosen()) },
-            )
-        }
-        folder.onDelete?.let { delete ->
-            SelectionAction(
-                icon = Icons.Rounded.Delete,
-                label = stringResource(R.string.delete),
-                color = DESTRUCTIVE,
-                enabled = count > 0,
-                onClick = { delete(chosen()) },
-            )
+        Row(
+            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            folder.onPlayNext?.let { playNext ->
+                SelectionIconAction(
+                    icon = SfIcons.PlayNext,
+                    label = stringResource(R.string.play_next),
+                    color = MaterialTheme.colorScheme.primary,
+                    enabled = count > 0,
+                ) { playNext(chosen()) }
+            }
+            folder.onAddToQueue?.let { add ->
+                SelectionIconAction(
+                    icon = SfIcons.PlayLast,
+                    label = stringResource(R.string.add_to_queue),
+                    color = MaterialTheme.colorScheme.primary,
+                    enabled = count > 0,
+                ) { add(chosen()) }
+            }
+            folder.onAddToPlaylist?.let { add ->
+                SelectionIconAction(
+                    icon = SfIcons.AddToPlaylist,
+                    label = stringResource(R.string.add_to_playlist),
+                    color = MaterialTheme.colorScheme.primary,
+                    enabled = count > 0,
+                ) { add(chosen()) }
+            }
+            folder.onUpload?.let { upload ->
+                SelectionAction(
+                    icon = Icons.Rounded.FileUpload,
+                    label = stringResource(R.string.upload_to_webdav),
+                    color = MaterialTheme.colorScheme.primary,
+                    enabled = count > 0,
+                    onClick = { upload(chosen()) },
+                )
+            }
+            folder.onDownload?.let { download ->
+                SelectionAction(
+                    icon = Icons.Rounded.Download,
+                    label = stringResource(R.string.download),
+                    color = MaterialTheme.colorScheme.primary,
+                    enabled = count > 0,
+                    onClick = { download(chosen()) },
+                )
+            }
+            folder.onRemoveFromCache?.let { remove ->
+                SelectionAction(
+                    icon = Icons.Rounded.Delete,
+                    label = stringResource(R.string.cached_song_remove),
+                    color = DESTRUCTIVE,
+                    enabled = count > 0,
+                    onClick = { remove(chosen()) },
+                )
+            }
+            folder.onDelete?.let { delete ->
+                SelectionAction(
+                    icon = Icons.Rounded.Delete,
+                    label = stringResource(R.string.delete),
+                    color = DESTRUCTIVE,
+                    enabled = count > 0,
+                    onClick = { delete(chosen()) },
+                )
+            }
         }
         TextButton(onClick = state::clear) { Text(stringResource(R.string.cancel)) }
+    }
+}
+
+@Composable
+private fun SelectionIconAction(
+    icon: ImageVector,
+    label: String,
+    color: Color,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, enabled = enabled) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = if (enabled) color else color.copy(alpha = 0.35f),
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 
