@@ -1,0 +1,114 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - "feature/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build installable Dev APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: "17"
+          distribution: temurin
+
+      - name: Locate Android SDK tools
+        shell: bash
+        run: |
+          SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [[ ! -d "$SDK_PATH" ]]; then
+            echo "Android SDK directory was not found: $SDK_PATH" >&2
+            exit 1
+          fi
+          SDKMANAGER="$(find "$SDK_PATH/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "sdkmanager was not found under $SDK_PATH/cmdline-tools" >&2
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_PATH" >> "$GITHUB_ENV"
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "Using Android SDK: $SDK_PATH"
+          echo "Using sdkmanager: $SDKMANAGER"
+
+      - name: Install required Android SDK packages
+        shell: bash
+        run: |
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" --list --channel=3 | grep -E "platforms;android-37.0|cmake;3.22.1" || true
+          "$SDKMANAGER" --install --channel=3 "platforms;android-37.0" "cmake;3.22.1"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Write local.properties
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
+          LISTEN_TOGETHER_SERVER: ${{ secrets.LISTEN_TOGETHER_SERVER }}
+        shell: bash
+        run: |
+          cat > local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          LASTFM_API_KEY=$LASTFM_API_KEY
+          LASTFM_SECRET=$LASTFM_SECRET
+          LISTEN_TOGETHER_SERVER=$LISTEN_TOGETHER_SERVER
+          EOF
+
+      - name: Restore the shared debug signing key
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          if [[ -n "$DEBUG_KEYSTORE_BASE64" ]]; then
+            mkdir -p ~/.android
+            printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+            echo "Using the repository's shared debug signing key."
+          else
+            echo "No shared debug key secret; Gradle will use its generated debug key."
+          fi
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Build Dev Debug APKs
+        run: ./gradlew --no-daemon :app:assembleDevDebug
+
+      - name: Verify APK outputs
+        shell: bash
+        run: |
+          mapfile -t apks < <(find app/build/outputs/apk/dev/debug -maxdepth 1 -type f -name '*.apk' | sort)
+          if (( ${#apks[@]} == 0 )); then
+            echo "No APKs were produced." >&2
+            exit 1
+          fi
+          printf '%s\n' "${apks[@]}"
+          sha256sum "${apks[@]}"
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitchord-dev-debug-${{ github.run_number }}
+          path: app/build/outputs/apk/dev/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

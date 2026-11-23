@@ -633,6 +633,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _detailStack = MutableStateFlow<List<DetailPage>>(emptyList())
     val detailStack: StateFlow<List<DetailPage>> = _detailStack.asStateFlow()
 
+    private val _selection = MutableStateFlow<SongSelection?>(null)
+    /** Multi-selection scoped to the currently opened album or playlist. */
+    val selection: StateFlow<SongSelection?> = _selection.asStateFlow()
+
+    fun startSelection(browseId: String, song: Song? = null) {
+        _selection.value = song?.let { SongSelection(browseId).toggled(it) } ?: SongSelection(browseId)
+    }
+
+    fun toggleSelected(song: Song) {
+        _selection.value = _selection.value?.toggled(song)
+    }
+
+    fun selectAll(browseId: String, songs: List<Song>) {
+        val current = _selection.value?.takeIf { it.browseId == browseId } ?: SongSelection(browseId)
+        _selection.value = current.withAll(songs)
+    }
+
+    fun clearSelection() {
+        _selection.value = null
+    }
+
     /**
      * The app's back stack: the routes pushed over the tabs, interleaved with
      * [detailStack]. Held here so it survives a configuration change along
@@ -1277,6 +1298,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Removes selected playlist entries in one request, preserving duplicate-song identity. */
+    fun removeFromPlaylist(
+        browseId: String,
+        songs: List<Song>,
+        onResult: (Boolean) -> Unit = {},
+    ) {
+        val entries = songs.mapNotNull { song ->
+            song.setVideoId?.let { it to song.videoId }
+        }.distinctBy { it.first }
+        if (entries.isEmpty() || !requireSignIn()) {
+            onResult(false)
+            return
+        }
+        val removedEntryIds = entries.mapTo(HashSet()) { it.first }
+        viewModelScope.launch {
+            YtMusicRepository.removeFromPlaylist(browseId.removePrefix("VL"), entries).fold(
+                onSuccess = {
+                    libraryStale = true
+                    _detailStack.value = _detailStack.value.map { page ->
+                        val current = (page.songs as? UiState.Success)?.data
+                        if (page.browseId != browseId || current == null) {
+                            page
+                        } else {
+                            page.copy(
+                                songs = UiState.Success(
+                                    current.filterNot { song -> song.setVideoId?.let(removedEntryIds::contains) == true },
+                                ),
+                            )
+                        }
+                    }
+                    onResult(true)
+                },
+                onFailure = { onResult(false) },
+            )
+        }
+    }
+
     /**
      * Drops [song] from the playlist page it is being read on, and takes the
      * row out from under the reader rather than waiting for a re-fetch.
@@ -1848,6 +1906,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Tapping a tab should leave any pushed page behind. */
     fun clearDetail() {
+        clearSelection()
         if (_detailStack.value.isNotEmpty()) _detailStack.value = emptyList()
         navigator.onDetailStackShrunk(0)
     }
@@ -2881,6 +2940,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 it.browseId == browseId && it.songs is UiState.Loading
             } == true
         ) return
+        if (_detailStack.value.lastOrNull()?.browseId != browseId) clearSelection()
         if (browseId.startsWith(SPOTIFY_PAGE_PREFIX)) {
             openSpotifyPage(browseId, title, subtitle, thumbnailUrl)
             return
@@ -3449,6 +3509,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun closeDetail(): Boolean {
         val stack = _detailStack.value
         if (stack.isEmpty()) return false
+        clearSelection()
         _detailStack.value = stack.dropLast(1)
         navigator.onDetailStackShrunk(_detailStack.value.size)
         return true
