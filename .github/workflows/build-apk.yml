@@ -75,6 +75,19 @@ jobs:
           LISTEN_TOGETHER_SERVER=$LISTEN_TOGETHER_SERVER
           EOF
 
+      - name: Restore the shared debug signing key
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          if [[ -n "$DEBUG_KEYSTORE_BASE64" ]]; then
+            mkdir -p ~/.android
+            printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > ~/.android/debug.keystore
+            echo "Using the repository's shared debug signing key."
+          else
+            echo "No shared debug key secret; Gradle will use its generated debug key."
+          fi
+
       - name: Grant execute permission
         run: chmod +x gradlew
 
