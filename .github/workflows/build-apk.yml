@@ -55,8 +55,8 @@ jobs:
         shell: bash
         run: |
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" --list --channel=3 | grep -E "platforms;android-37|cmake;3.22.1" || true
-          "$SDKMANAGER" --install --channel=3 "platforms;android-37" "cmake;3.22.1"
+          "$SDKMANAGER" --list --channel=3 | grep -E "platforms;android-37.0|cmake;3.22.1" || true
+          "$SDKMANAGER" --install --channel=3 "platforms;android-37.0" "cmake;3.22.1"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
